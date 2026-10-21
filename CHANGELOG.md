@@ -2,6 +2,16 @@
 
 All notable changes to Unity Asset Redeemer are documented here. Versions follow semantic versioning.
 
+## Unreleased
+
+### Fixed
+
+- Reject conflicting free and paid price labels and prevent fallback scanning from bypassing owned-card checks.
+- Reject GraphQL responses containing errors even if they include a matching product ID.
+- Avoid treating generic already-exists errors as confirmed ownership.
+- Stop after transient failures exhaust retries, or when Unity requests a wait longer than 60 seconds.
+- Detect repeated listing content even when the page URL changes.
+
 ## [2.3.0] - 2026-10-21
 
 ### Added

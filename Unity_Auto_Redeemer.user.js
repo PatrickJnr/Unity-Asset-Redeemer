@@ -39,9 +39,9 @@
     const parseRetryAfter = (value, now = Date.now()) => {
         if (!value) return 0;
         const seconds = Number(value);
-        if (Number.isFinite(seconds) && seconds > 0) return Math.min(seconds * 1000, 60000);
+        if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
         const date = Date.parse(value);
-        return Number.isFinite(date) ? Math.min(Math.max(0, date - now), 60000) : 0;
+        return Number.isFinite(date) ? Math.max(0, date - now) : 0;
     };
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     const readJSON = (store, key, fallback) => {
@@ -471,10 +471,8 @@
 
     function hasFreePrice(element) {
         const priceNodes = [...element.querySelectorAll(PRICE_SELECTORS.join(','))];
-        for (const node of priceNodes) {
-            if (/^free$/i.test(node.textContent.trim())) return true;
-        }
         if (priceNodes.some(node => /(?:[$£€]\s*\d|\d[,.]\d{2})/.test(node.textContent))) return false;
+        if (priceNodes.some(node => /^free$/i.test(node.textContent.trim()))) return true;
         for (const node of element.querySelectorAll('span,small,strong,div,p')) {
             if (node.children.length === 0 && /^free$/i.test(node.textContent.trim())) return true;
         }
@@ -511,6 +509,7 @@
         for (const link of document.querySelectorAll('a[href*="/packages/"]')) {
             const product = parseProductLink(link.getAttribute('href'));
             if (!product || selected.has(product.id)) continue;
+            if (link.closest(CARD_SELECTORS.join(','))) continue;
             let parent = link.parentElement;
             for (let depth = 0; parent && depth < 7; parent = parent.parentElement, depth++) {
                 if (uniqueProductIds(parent).size > 1) break;
@@ -557,6 +556,11 @@
             active: activePage?.textContent?.trim() || '',
             ids: [...productIds].sort()
         });
+    }
+
+    function listingContentKey(identity) {
+        const ids = JSON.parse(identity).ids;
+        return ids.length ? JSON.stringify(ids) : null;
     }
 
     function enabled(element) {
@@ -652,7 +656,7 @@
 
     function errorFromResponse(data) {
         if (!data || typeof data !== 'object') return 'Unexpected server response';
-        return Array.isArray(data.errors) ? data.errors.map(x => x.message || 'GraphQL error').join('; ').slice(0, 300) : 'No entitlement returned';
+        return Array.isArray(data.errors) && data.errors.length ? data.errors.map(x => x?.message || 'GraphQL error').join('; ').slice(0, 300) : 'No entitlement returned';
     }
 
     async function redeemOne(asset, signal) {
@@ -685,9 +689,9 @@
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         let data;
         try { data = await response.json(); } catch { throw new Error('Unity returned non-JSON response'); }
-        if (String(data?.data?.addToDownload?.id || '') === String(asset.id)) return;
+        if (!(Array.isArray(data?.errors) && data.errors.length) && String(data?.data?.addToDownload?.id || '') === String(asset.id)) return;
         const reason = errorFromResponse(data);
-        if (/already (owned|purchased|added)|already in|already exists/i.test(reason)) {
+        if (/already (owned|purchased|added)|already in (?:your |the )?(?:assets|library)|already (?:owned|purchased) by/i.test(reason)) {
             throw Object.assign(new Error(reason), { alreadyOwned: true });
         }
         throw new Error(reason);
@@ -712,11 +716,13 @@
                 if (error.alreadyOwned) return 'owned';
                 if (error.fatal) throw error;
                 if (error.retryable && attempt < 2) {
+                    if (error.retryAfter > 60000) throw new Error(`Unity requested a retry after ${Math.ceil(error.retryAfter / 1000)} seconds. Wait before starting again.`);
                     const waitMs = error.retryAfter || (2000 * 2 ** attempt + Math.floor(Math.random() * 600));
                     addEvent('skip', `Retrying ${asset.name} after ${Math.ceil(waitMs / 1000)}s (${error.message})`);
                     if (!(await pause(waitMs, token))) return 'stopped';
                     continue;
                 }
+                if (error.retryable) throw new Error(`${error.message}. Retries exhausted; wait before starting again.`);
                 return { failure: error.message };
             } finally {
                 if (state.aborter === controller) state.aborter = null;
@@ -772,15 +778,18 @@
         state.currentName = '';
         const processed = new Set([...knownIds, ...(Array.isArray(resumeData?.processed) ? resumeData.processed : [])]);
         const seenPages = new Set(Array.isArray(resumeData?.seenPages) ? resumeData.seenPages : []);
+        const seenContent = new Set([...seenPages].map(listingContentKey).filter(Boolean));
         setStatus('Scanning the current page...', 'running');
         try {
             while (active(token)) {
                 const signature = listingIdentity();
-                if (seenPages.has(signature)) {
+                const contentKey = listingContentKey(signature);
+                if (seenPages.has(signature) || (contentKey && seenContent.has(contentKey))) {
                     setStatus('Stopped: page repeated. No more claims attempted.', 'error');
                     break;
                 }
                 seenPages.add(signature);
+                if (contentKey) seenContent.add(contentKey);
                 state.page++;
                 if (state.page > Math.max(1, Math.min(300, Number(settings.maxPages) || 100))) {
                     setStatus('Stopped at the maximum page safety limit.', 'error');
@@ -921,9 +930,11 @@
             hasFreePrice,
             hasOwnedAction,
             listingIdentity,
+            listingContentKey,
             nextPageControl,
             parseProductLink,
             parseRetryAfter,
+            redeemOne,
             validProductId
         });
     }

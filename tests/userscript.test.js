@@ -55,12 +55,39 @@ test('parses claim errors without treating unknown responses as success', () => 
     dom.window.close();
 });
 
-test('supports Retry-After seconds and HTTP dates with a 60 second cap', () => {
+test('parses Retry-After seconds and HTTP dates without shortening server guidance', () => {
     const { dom, api } = load();
     const now = Date.parse('2026-01-01T00:00:00Z');
     assert.equal(api.parseRetryAfter('5', now), 5000);
     assert.equal(api.parseRetryAfter('Thu, 01 Jan 2026 00:00:12 GMT', now), 12000);
-    assert.equal(api.parseRetryAfter('999', now), 60000);
+    assert.equal(api.parseRetryAfter('999', now), 999000);
+    dom.window.close();
+});
+
+test('rejects conflicting prices and does not rediscover owned cards through fallback', () => {
+    const { dom, api } = load(`
+      <article class="packageCard"><a href="/packages/a-1">A</a><span class="price">Free</span><span class="price">£4.99</span></article>
+      <article class="packageCard"><div><a href="/packages/b-2">B</a><span>Free</span></div><button>Download</button></article>
+    `);
+    assert.equal(api.getCandidates().length, 0);
+    dom.window.close();
+});
+
+test('claim rejects GraphQL errors even when a matching product ID is returned', async () => {
+    const { dom, api } = load();
+    dom.window.document.cookie = '_csrf=test';
+    dom.window.fetch = async () => ({ ok: true, status: 200, json: async () => ({ data: { addToDownload: { id: '101' } }, errors: [{ message: 'Denied' }] }) });
+    await assert.rejects(api.redeemOne({ id: '101' }), /Denied/);
+    dom.window.fetch = async () => ({ ok: true, status: 200, json: async () => ({ data: { addToDownload: { id: '101' } } }) });
+    await api.redeemOne({ id: '101' });
+    dom.window.close();
+});
+
+test('claim does not treat a generic already-exists error as ownership', async () => {
+    const { dom, api } = load();
+    dom.window.document.cookie = '_csrf=test';
+    dom.window.fetch = async () => ({ ok: true, status: 200, json: async () => ({ errors: [{ message: 'Transaction already exists' }] }) });
+    await assert.rejects(api.redeemOne({ id: '101' }), error => !error.alreadyOwned);
     dom.window.close();
 });
 
@@ -81,5 +108,15 @@ test('pagination returns no next control on a final page', () => {
 test('listing identity remains stable for repeated-page protection', () => {
     const { dom, api } = load('<a href="/packages/tool-55">Tool</a><span aria-current="page">1</span>');
     assert.equal(api.listingIdentity(), api.listingIdentity());
+    dom.window.close();
+});
+
+test('repeated listing content is detected even if the page URL changes', () => {
+    const { dom, api } = load('<a href="/packages/tool-55">Tool</a>');
+    const first = api.listingIdentity();
+    dom.window.history.replaceState({}, '', '?page=2');
+    const second = api.listingIdentity();
+    assert.notEqual(first, second);
+    assert.equal(api.listingContentKey(first), api.listingContentKey(second));
     dom.window.close();
 });

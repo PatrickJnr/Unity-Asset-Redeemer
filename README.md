@@ -21,7 +21,7 @@ The script runs only on `https://assetstore.unity.com/*`. It has `@grant none`, 
 - Skips cards that Unity visibly marks as owned.
 - Uses Unity's existing `addToDownload` GraphQL operation with the current session and CSRF cookie.
 - Validates product IDs, HTTP status, JSON, GraphQL errors, and the returned product ID before recording a claim.
-- Retries temporary network, rate-limit, and server failures up to two times with bounded delays.
+- Retries temporary network, rate-limit, and server failures up to two times with bounded delays, then stops the run.
 - Processes numbered or arrow-based pagination and waits for listing content to change.
 - Stops on repeated pages, failed navigation, a configurable safety limit, or user request.
 - Stores up to 20,000 confirmed owned product IDs in browser local storage.
@@ -70,7 +70,7 @@ Do not reuse a released version number. Use a patch for fixes, a minor version f
 
 - **No candidates appear:** Wait for the listing to finish loading, confirm that visible cards say **Free**, and try **Scan page**. Unity markup changes may require a selector update.
 - **No CSRF cookie / authentication error:** Sign in again, accept any current Unity terms, refresh the listing, and retry.
-- **Rate limit or server error:** The script honors `Retry-After` up to 60 seconds and uses bounded retries. Wait before starting another run if failures continue.
+- **Rate limit or server error:** The script waits for `Retry-After` values up to 60 seconds. For longer waits or exhausted retries it stops; wait for Unity's requested interval before starting again.
 - **Pagination stops early:** The activity log explains whether the Next control was missing, navigation timed out, or a page repeated.
 - **Assets are skipped after changing accounts:** Reset local data because the confirmed-owned cache is shared across Unity accounts in the browser profile.
 - **Duplicate dashboard or requests:** Disable the previous userscript installation after migrating.
