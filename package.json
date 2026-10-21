@@ -1,0 +1,17 @@
+{
+  "name": "unity-asset-redeemer",
+  "version": "2.3.0",
+  "private": true,
+  "description": "Validation and offline tests for the Unity Asset Redeemer userscript.",
+  "scripts": {
+    "check": "node --check Unity_Auto_Redeemer.user.js && node scripts/validate.mjs",
+    "test": "node --test",
+    "validate": "npm run check && npm test"
+  },
+  "devDependencies": {
+    "jsdom": "^27.0.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
