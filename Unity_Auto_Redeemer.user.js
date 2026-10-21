@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unity Asset Redeemer
 // @namespace    https://github.com/PatrickJnr/Unity-Asset-Redeemer
-// @version      2.3.0
+// @version      2.3.1
 // @description  Claim free Unity Asset Store assets with automatic pagination, ownership tracking and a clean slate dashboard.
 // @author       Patrick Jr. (maintainer), CreosB (original)
 // @license      CC-BY-NC-SA-4.0
@@ -232,7 +232,7 @@
             <div class="panel-top">
                 <div><div class="eyebrow">Asset Store / Utility</div><h2 class="heading">Auto Redeemer</h2>
                 <p class="description">Free assets. Confirmed ownership checks.</p></div>
-                <span class="version">v2.3.0</span>
+                <span class="version">v2.3.1</span>
             </div>
             <div class="content">
                 <div class="runstate"><div class="state-label"><span class="indicator" id="panel-dot"></span><span id="run-label">IDLE</span></div><span class="page-label" id="page-label">PAGE -</span></div>

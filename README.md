@@ -2,7 +2,7 @@
 
 Unity Asset Redeemer is a userscript for reviewing and claiming free listings on the Unity Asset Store. It keeps the existing Unity authentication flow, processes listing pages conservatively, remembers confirmed ownership locally, and presents progress in a compact slate dashboard.
 
-Current version: **2.3.0**
+Current version: **2.3.1**
 
 ## Install
 

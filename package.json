@@ -1,6 +1,6 @@
 {
   "name": "unity-asset-redeemer",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "private": true,
   "description": "Validation and offline tests for the Unity Asset Redeemer userscript.",
   "scripts": {

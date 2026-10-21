@@ -2,7 +2,7 @@
 
 All notable changes to Unity Asset Redeemer are documented here. Versions follow semantic versioning.
 
-## Unreleased
+## [2.3.1] - 2026-10-21
 
 ### Fixed
 
@@ -41,4 +41,5 @@ All notable changes to Unity Asset Redeemer are documented here. Versions follow
 - Persistent ownership history is local to the browser profile and is not separated by Unity account.
 - Live Unity redemption is not covered by automated tests.
 
+[2.3.1]: https://github.com/PatrickJnr/Unity-Asset-Redeemer/releases/tag/v2.3.1
 [2.3.0]: https://github.com/PatrickJnr/Unity-Asset-Redeemer/releases/tag/v2.3.0
