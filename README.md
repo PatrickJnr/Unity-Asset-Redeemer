@@ -28,7 +28,9 @@ The script runs only on `https://assetstore.unity.com/*`. It has `@grant none`, 
 - Provides preview, activity, searchable session history, JSON export, and local-data reset controls.
 - Uses a movable, collapsible Shadow DOM dashboard with keyboard focus indicators and reduced-motion support.
 
-No genuine project screenshot is currently available. A screenshot will be added only after it is captured from a real Unity Asset Store session.
+## Screenshot
+
+![Unity Asset Redeemer dashboard showing its controls and ownership summary](docs/dashboard.png)
 
 ## Usage
 
