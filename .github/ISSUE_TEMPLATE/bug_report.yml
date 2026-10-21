@@ -1,0 +1,39 @@
+name: Bug report
+description: Report a reproducible problem with Unity Asset Redeemer.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include cookies, CSRF tokens, account details or other credentials.
+  - type: input
+    id: version
+    attributes:
+      label: Userscript version
+      placeholder: 2.3.0
+    validations:
+      required: true
+  - type: dropdown
+    id: manager
+    attributes:
+      label: Userscript manager
+      options: [Tampermonkey, Violentmonkey, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized console output
+      description: Remove personal data and credentials before pasting logs.
