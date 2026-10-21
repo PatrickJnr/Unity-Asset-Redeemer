@@ -1,10 +1,16 @@
-# Unity Asset Redeemer
+# Unity Asset Redeemer: Free Unity Asset Store Userscript
 
-Unity Asset Redeemer is a userscript for reviewing and claiming free listings on the Unity Asset Store. It keeps the existing Unity authentication flow, processes listing pages conservatively, remembers confirmed ownership locally, and presents progress in a compact slate dashboard.
+Unity Asset Redeemer is a Tampermonkey userscript for reviewing and claiming free Unity Asset Store assets, with automatic pagination, ownership tracking and a compact slate dashboard. It runs in your browser using your signed-in Unity session and processes listing pages conservatively.
+
+Maintained by Patrick Jr., based on the original work by CreosB. The script skips paid products and does not bypass Unity authentication or access restrictions.
 
 Current version: **2.3.1**
 
+[Release notes](https://github.com/PatrickJnr/Unity-Asset-Redeemer/releases/latest) · [Report a bug](https://github.com/PatrickJnr/Unity-Asset-Redeemer/issues/new/choose) · [Contributing](CONTRIBUTING.md)
+
 ## Install
+
+A userscript is a JavaScript file that a browser extension runs on matching websites. Install a userscript manager first, then install this script through it.
 
 [**Install Userscript**](https://raw.githubusercontent.com/PatrickJnr/Unity-Asset-Redeemer/main/Unity_Auto_Redeemer.user.js)
 
@@ -31,6 +37,8 @@ The script runs only on `https://assetstore.unity.com/*`. It has `@grant none`, 
 ## Screenshot
 
 ![Unity Asset Redeemer dashboard showing its controls and ownership summary](docs/dashboard.png)
+
+Dashboard captured in v2.3.0. The current release is listed above.
 
 ## Usage
 
@@ -74,6 +82,24 @@ Do not reuse a released version number. Use a patch for fixes, a minor version f
 - **Pagination stops early:** The activity log explains whether the Next control was missing, navigation timed out, or a page repeated.
 - **Assets are skipped after changing accounts:** Reset local data because the confirmed-owned cache is shared across Unity accounts in the browser profile.
 - **Duplicate dashboard or requests:** Disable the previous userscript installation after migrating.
+
+## Frequently asked questions
+
+### Does this claim paid Unity assets for free?
+
+No. Unity Asset Redeemer processes listings identified as free and excludes cards with paid prices. It does not unlock paid assets or bypass purchase requirements.
+
+### Is this a Unity Editor plugin?
+
+No. This is a browser userscript for the Unity Asset Store website. It is not a Unity package or an Editor extension.
+
+### Do I need to leave the browser tab open?
+
+Yes. Claiming and automatic pagination run in the Unity Asset Store tab. Keep the tab open while a run is active and use **Stop** to end it.
+
+### Is Unity Asset Redeemer an official Unity tool?
+
+No. This is an independently maintained project and is not affiliated with or endorsed by Unity.
 
 ## Known limitations
 

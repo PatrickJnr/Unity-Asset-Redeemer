@@ -27,3 +27,9 @@ Do not make automated tests contact Unity or require an authenticated account. M
 Maintainers use semantic versioning. A userscript version is published only after validation passes. Keep `@version`, `package.json`, the changelog heading, Git tag and GitHub release aligned.
 
 By contributing inherited or modified project material, you agree that it is distributed under CC BY-NC-SA 4.0 and that required attribution is preserved.
+
+## Repository discoverability
+
+Keep the GitHub About description and README introduction specific to free Unity Asset Store assets, Tampermonkey and the implemented features. Use relevant repository topics, avoid keyword stuffing, and do not imply official Unity endorsement or support for untested userscript managers.
+
+The About website link points to the README installation section. Keep its `#install` anchor and the canonical raw userscript link working. Documentation-only changes do not require a new userscript version or release tag.
