@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unity Asset Redeemer
 // @namespace    https://github.com/PatrickJnr/Unity-Asset-Redeemer
-// @version      2.3.1
+// @version      2.3.2
 // @description  Claim free Unity Asset Store assets with automatic pagination, ownership tracking and a clean slate dashboard.
 // @author       Patrick Jr. (maintainer), CreosB (original)
 // @license      CC-BY-NC-SA-4.0
@@ -44,16 +44,71 @@
         return Number.isFinite(date) ? Math.max(0, date - now) : 0;
     };
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-    const readJSON = (store, key, fallback) => {
-        try { return JSON.parse(store.getItem(key)) ?? fallback; }
-        catch { return fallback; }
-    };
+    const storageWarnings = new Map();
+    let storageNotice = null;
+    const storageLabel = key => ({
+        [SESSION_KEY]: 'session history', [RESUME_KEY]: 'page progress',
+        [SETTINGS_KEY]: 'settings', [OWNED_KEY]: 'ownership history'
+    })[key];
+    function renderStorageWarnings() {
+        if (!storageNotice) return;
+        storageNotice.textContent = [...storageWarnings.values()].join(' ');
+        storageNotice.hidden = storageWarnings.size === 0;
+    }
+    function warnStorage(key, message) {
+        storageWarnings.set(key, message);
+        renderStorageWarnings();
+    }
+    function readJSON(area, key, fallback) {
+        try { return JSON.parse(window[area].getItem(key)) ?? fallback; }
+        catch {
+            warnStorage(key, `Could not read ${storageLabel(key)}. Saved data may be invalid or browser storage unavailable.`);
+            return fallback;
+        }
+    }
+    function writeStored(area, key, value, remove = false) {
+        try {
+            const store = window[area];
+            if (remove) store.removeItem(key);
+            else store.setItem(key, JSON.stringify(value));
+            storageWarnings.delete(key);
+            renderStorageWarnings();
+            return true;
+        } catch {
+            warnStorage(key, `Could not ${remove ? 'clear' : 'save'} ${storageLabel(key)}. Browser storage may be blocked or full. ${remove ? 'Saved data may return after reloading.' : 'These changes are only held in this tab.'}`);
+            return false;
+        }
+    }
     const defaults = { allPages: true, preview: false, delay: 1500, maxPages: 100 };
-    const settings = { ...defaults, ...readJSON(localStorage, SETTINGS_KEY, {}) };
-    const history = readJSON(sessionStorage, SESSION_KEY, []);
-    const assets = Array.isArray(history) ? history.filter(x => x && validProductId(x.id)) : [];
+    function normalizeSettings(value) {
+        const raw = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+        return {
+            allPages: typeof raw.allPages === 'boolean' ? raw.allPages : defaults.allPages,
+            preview: typeof raw.preview === 'boolean' ? raw.preview : defaults.preview,
+            delay: Number.isFinite(raw.delay) ? Math.min(60000, Math.max(1500, raw.delay)) : defaults.delay,
+            maxPages: Number.isInteger(raw.maxPages) ? Math.min(300, Math.max(1, raw.maxPages)) : defaults.maxPages
+        };
+    }
+    const settings = normalizeSettings(readJSON('localStorage', SETTINGS_KEY, {}));
+    const history = readJSON('sessionStorage', SESSION_KEY, []);
+    function normalizeHistory(records) {
+        if (!Array.isArray(records)) return [];
+        return records.filter(record => record && validProductId(record.id) &&
+            ['claimed', 'skipped', 'failed'].includes(record.status) &&
+            typeof record.name === 'string' && typeof record.timestamp === 'string' &&
+            Number.isFinite(Date.parse(record.timestamp))).slice(-3000).map(record => ({
+                id: String(record.id), name: record.name.slice(0, 180),
+                url: parseProductLink(record.url)?.url || '', status: record.status,
+                reason: typeof record.reason === 'string' ? record.reason.slice(0, 300) : '',
+                timestamp: new Date(record.timestamp).toISOString()
+            }));
+    }
+    const assets = normalizeHistory(history);
+    if (!Array.isArray(history) || assets.length !== Math.min(history.length, 3000)) {
+        warnStorage(SESSION_KEY, 'Invalid session history entries were ignored.');
+    }
     const claimedIds = new Set(assets.filter(x => x.status === 'claimed' || (x.status === 'skipped' && x.reason === 'Already owned')).map(x => String(x.id)));
-    const savedOwned = readJSON(localStorage, OWNED_KEY, []);
+    const savedOwned = readJSON('localStorage', OWNED_KEY, []);
     const knownIds = new Set([
         ...(Array.isArray(savedOwned) ? savedOwned : []).map(String).filter(validProductId).slice(-20000),
         ...claimedIds
@@ -61,7 +116,7 @@
     function rememberOwned(id) {
         knownIds.add(String(id));
         claimedIds.add(String(id));
-        try { localStorage.setItem(OWNED_KEY, JSON.stringify([...knownIds].slice(-20000))); } catch {}
+        writeStored('localStorage', OWNED_KEY, [...knownIds].slice(-20000));
         updateCacheCount();
     }
     function updateCacheCount() {
@@ -72,7 +127,7 @@
         running: false, expanded: false, token: 0, aborter: null, page: 0,
         current: 0, total: 0, successes: 0, failures: 0, skipped: 0,
         currentName: '', status: 'Ready', severity: 'idle', events: [],
-        lastScan: [], drag: null
+        lastScan: [], drag: null, pendingResume: false, resumeTimer: null, resumeGeneration: 0
     };
 
     const css = `
@@ -81,6 +136,7 @@
         [hidden] { display: none !important; }
         .shell {
             width: min(420px, calc(100vw - 24px));
+            max-height: calc(100vh - 16px); overflow: auto; overscroll-behavior: contain;
             font: 12px/1.5 Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
             color: #e9eef4; letter-spacing: 0; text-align: left;
         }
@@ -206,7 +262,7 @@
         .footer-btn:disabled { opacity: .45; cursor: not-allowed; }
         .footer-btn.warn { color: #c8a5a5; }
         .footer-note { color: #8598a9; font-size: 10px; }
-        button:focus-visible, input:focus-visible { outline: 2px solid #a6becf; outline-offset: 2px; }
+        button:focus-visible, input:focus-visible, [tabindex]:focus-visible { outline: 2px solid #a6becf; outline-offset: 2px; }
         @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }
     `;
 
@@ -221,7 +277,7 @@
     shell.className = 'shell';
     shell.innerHTML = `
         <div class="masthead">
-            <button class="handle" type="button" title="Drag the redeemer" aria-label="Drag panel">⋮⋮</button>
+            <button class="handle" type="button" title="Drag or use Arrow keys to move. Shift moves further. Home resets the position." aria-label="Move panel. Use Arrow keys, Shift for larger steps, or Home to reset position.">⋮⋮</button>
             <div class="brand" aria-hidden="true">U</div>
             <button class="toggle" id="toggle" type="button" aria-expanded="false" aria-controls="panel">
                 <span class="toggle-text"><strong id="title">UNITY / AUTO REDEEM</strong><small id="subtitle">Ready to scan</small></span>
@@ -232,7 +288,7 @@
             <div class="panel-top">
                 <div><div class="eyebrow">Asset Store / Utility</div><h2 class="heading">Auto Redeemer</h2>
                 <p class="description">Free assets. Confirmed ownership checks.</p></div>
-                <span class="version">v2.3.1</span>
+                <span class="version">v2.3.2</span>
             </div>
             <div class="content">
                 <div class="runstate"><div class="state-label"><span class="indicator" id="panel-dot"></span><span id="run-label">IDLE</span></div><span class="page-label" id="page-label">PAGE -</span></div>
@@ -255,12 +311,13 @@
                 </div>
                 <div class="cache-line"><span>Confirmed owned / saved on this browser</span><strong id="cache-count">0</strong></div>
                 <p class="cache-hint">Cache is shared across Unity accounts in this browser. Reset it when switching accounts.</p>
+                <p class="cache-hint" id="storage-warning" role="status" hidden></p>
             </div>
             <div class="tabs" role="tablist" aria-label="Results">
-                <button id="tab-log" type="button" role="tab" aria-controls="log-pane" aria-selected="true">Activity</button>
-                <button id="tab-assets" type="button" role="tab" aria-controls="assets-pane" aria-selected="false">Session history (<span id="history-count">0</span>)</button>
+                <button id="tab-log" type="button" role="tab" aria-controls="log-pane" aria-selected="true" tabindex="0">Activity</button>
+                <button id="tab-assets" type="button" role="tab" aria-controls="assets-pane" aria-selected="false" tabindex="-1">Session history (<span id="history-count">0</span>)</button>
             </div>
-            <div class="tab-content" id="log-pane" role="tabpanel" aria-labelledby="tab-log"><ul class="list" id="log"></ul></div>
+            <div class="tab-content" id="log-pane" role="tabpanel" aria-labelledby="tab-log" tabindex="0"><ul class="list" id="log"></ul></div>
             <div class="tab-content" id="assets-pane" role="tabpanel" aria-labelledby="tab-assets" hidden>
                 <input class="search" id="search" type="search" placeholder="Search assets, IDs or status..." aria-label="Search claim history">
                 <ul class="list" id="assets"></ul>
@@ -272,13 +329,16 @@
     shadow.append(shell);
     (document.body || document.documentElement).append(host);
     const $ = id => shadow.getElementById(id);
+    storageNotice = $('storage-warning');
+    renderStorageWarnings();
 
     $('pages').checked = Boolean(settings.allPages);
     $('preview').checked = Boolean(settings.preview);
     const saveSettings = () => {
         settings.allPages = $('pages').checked;
         settings.preview = $('preview').checked;
-        try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch {}
+        Object.assign(settings, normalizeSettings(settings));
+        writeStored('localStorage', SETTINGS_KEY, settings);
     };
     $('pages').addEventListener('change', saveSettings);
     $('preview').addEventListener('change', saveSettings);
@@ -320,7 +380,7 @@
     }
 
     function saveHistory() {
-        try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(assets.slice(-3000))); } catch {}
+        writeStored('sessionStorage', SESSION_KEY, assets.slice(-3000));
     }
 
     function addHistory(asset, status, reason = '') {
@@ -329,6 +389,7 @@
         }
         if (status === 'claimed' && assets.some(x => x.status === 'claimed' && x.id === asset.id)) return;
         assets.push({ id: asset.id, name: asset.name, url: asset.url, status, reason, timestamp: new Date().toISOString() });
+        if (assets.length > 3000) assets.splice(0, assets.length - 3000);
         saveHistory();
         $('history-count').textContent = String(assets.length);
         if (!$('assets-pane').hidden) renderHistory();
@@ -377,9 +438,9 @@
         shadow.querySelector('[role="progressbar"]').setAttribute('aria-valuenow', String(percent));
         $('start').disabled = state.running;
         $('scan').disabled = state.running;
-        $('stop').disabled = !state.running;
-        $('pages').disabled = state.running;
-        $('preview').disabled = state.running;
+        $('stop').disabled = !state.running && !state.pendingResume;
+        $('pages').disabled = state.running || state.pendingResume;
+        $('preview').disabled = state.running || state.pendingResume;
         $('clear-cache').disabled = state.running;
     }
 
@@ -387,17 +448,33 @@
         state.expanded = !state.expanded;
         $('panel').hidden = !state.expanded;
         $('toggle').setAttribute('aria-expanded', String(state.expanded));
+        clampPanel();
     });
-    for (const [tab, pane, otherTab, otherPane] of [
-        ['tab-log', 'log-pane', 'tab-assets', 'assets-pane'],
-        ['tab-assets', 'assets-pane', 'tab-log', 'log-pane']
-    ]) {
-        $(tab).addEventListener('click', () => {
-            $(pane).hidden = false;
-            $(otherPane).hidden = true;
-            $(tab).setAttribute('aria-selected', 'true');
-            $(otherTab).setAttribute('aria-selected', 'false');
-            if (pane === 'assets-pane') renderHistory();
+    const resultTabs = ['tab-log', 'tab-assets'];
+    function selectTab(id, focus = false) {
+        for (const tabId of resultTabs) {
+            const selected = tabId === id;
+            $(tabId).setAttribute('aria-selected', String(selected));
+            $(tabId).tabIndex = selected ? 0 : -1;
+            $($(tabId).getAttribute('aria-controls')).hidden = !selected;
+        }
+        if (id === 'tab-assets') renderHistory();
+        if (focus) $(id).focus();
+        clampPanel();
+    }
+    for (const [index, id] of resultTabs.entries()) {
+        $(id).addEventListener('click', () => selectTab(id));
+        $(id).addEventListener('keydown', event => {
+            if (event.altKey || event.ctrlKey || event.metaKey) return;
+            let next;
+            if (event.key === 'ArrowRight') next = (index + 1) % resultTabs.length;
+            else if (event.key === 'ArrowLeft') next = (index + resultTabs.length - 1) % resultTabs.length;
+            else if (event.key === 'Home') next = 0;
+            else if (event.key === 'End') next = resultTabs.length - 1;
+            else return;
+            event.preventDefault();
+            event.stopPropagation();
+            selectTab(resultTabs[next], true);
         });
     }
     $('search').addEventListener('input', renderHistory);
@@ -413,11 +490,16 @@
     $('clear-cache').addEventListener('click', () => {
         if (state.running) return;
         if (!confirm('Reset local cache and this tab\'s history? This will not remove assets from your Unity account.')) return;
-        try {
-            localStorage.removeItem(OWNED_KEY);
-            sessionStorage.removeItem(SESSION_KEY);
-            sessionStorage.removeItem(RESUME_KEY);
-        } catch {}
+        cancelPendingResume();
+        const results = [
+            writeStored('localStorage', OWNED_KEY, null, true),
+            writeStored('sessionStorage', SESSION_KEY, null, true),
+            clearResume()
+        ];
+        if (results.some(result => !result)) {
+            setStatus('Reset incomplete: browser storage could not be cleared. Resolve the storage warning and try again before switching accounts.', 'error');
+            return;
+        }
         knownIds.clear();
         claimedIds.clear();
         assets.splice(0);
@@ -429,7 +511,32 @@
         setStatus('Local saved claims and session history cleared. Your Unity assets are unchanged.');
     });
 
+    function clampPanel(left, top) {
+        const headerHeight = shadow.querySelector('.masthead').getBoundingClientRect().height;
+        $('panel').style.maxHeight = `${Math.min(700, Math.max(120, innerHeight - headerHeight - 22))}px`;
+        const bounds = host.getBoundingClientRect();
+        host.style.left = `${Math.max(0, Math.min(left ?? bounds.left, innerWidth - host.offsetWidth))}px`;
+        host.style.top = `${Math.max(0, Math.min(top ?? bounds.top, innerHeight - host.offsetHeight))}px`;
+        host.style.right = 'auto';
+    }
+
     const handle = shadow.querySelector('.handle');
+    handle.addEventListener('keydown', event => {
+        if (event.altKey || event.ctrlKey || event.metaKey) return;
+        const step = event.shiftKey ? 50 : 10;
+        const bounds = host.getBoundingClientRect();
+        let left = bounds.left;
+        let top = bounds.top;
+        if (event.key === 'ArrowLeft') left -= step;
+        else if (event.key === 'ArrowRight') left += step;
+        else if (event.key === 'ArrowUp') top -= step;
+        else if (event.key === 'ArrowDown') top += step;
+        else if (event.key === 'Home') { left = innerWidth - host.offsetWidth - 18; top = 18; }
+        else return;
+        event.preventDefault();
+        event.stopPropagation();
+        clampPanel(left, top);
+    });
     handle.addEventListener('pointerdown', event => {
         if (event.button !== 0) return;
         const bounds = host.getBoundingClientRect();
@@ -439,15 +546,14 @@
     });
     handle.addEventListener('pointermove', event => {
         if (!state.drag || state.drag.id !== event.pointerId) return;
-        const x = Math.max(0, Math.min(event.clientX - state.drag.x, innerWidth - host.offsetWidth));
-        const y = Math.max(0, Math.min(event.clientY - state.drag.y, innerHeight - host.offsetHeight));
-        host.style.left = `${x}px`;
-        host.style.top = `${y}px`;
-        host.style.right = 'auto';
+        clampPanel(event.clientX - state.drag.x, event.clientY - state.drag.y);
     });
     for (const name of ['pointerup', 'pointercancel', 'lostpointercapture']) {
         handle.addEventListener(name, () => { state.drag = null; });
     }
+    window.addEventListener('resize', () => clampPanel());
+    if (typeof ResizeObserver === 'function') new ResizeObserver(() => clampPanel()).observe(shell);
+    clampPanel();
 
     function parseProductLink(href) {
         try {
@@ -471,12 +577,14 @@
 
     function hasFreePrice(element) {
         const priceNodes = [...element.querySelectorAll(PRICE_SELECTORS.join(','))];
-        if (priceNodes.some(node => /(?:[$£€]\s*\d|\d[,.]\d{2})/.test(node.textContent))) return false;
+        const currencyPrice = /(?:\p{Sc}\s*\d|\d[\d.,]*\s*\p{Sc}|\b(?:USD|EUR|GBP|JPY|CAD|AUD|CNY|KRW)\s*\d|\d[\d.,]*\s*(?:USD|EUR|GBP|JPY|CAD|AUD|CNY|KRW)\b)/iu;
+        if (currencyPrice.test(element.textContent)) return false;
+        if (priceNodes.some(node => currencyPrice.test(node.textContent) || /\d[,.]\d{2}/.test(node.textContent))) return false;
+        const textNodes = [...element.querySelectorAll('span,small,strong,div,p,del,s')]
+            .filter(node => node.children.length === 0);
+        if (textNodes.some(node => currencyPrice.test(node.textContent))) return false;
         if (priceNodes.some(node => /^free$/i.test(node.textContent.trim()))) return true;
-        for (const node of element.querySelectorAll('span,small,strong,div,p')) {
-            if (node.children.length === 0 && /^free$/i.test(node.textContent.trim())) return true;
-        }
-        return false;
+        return textNodes.some(node => /^free$/i.test(node.textContent.trim()));
     }
 
     function hasOwnedAction(element) {
@@ -496,29 +604,36 @@
 
     function getCandidates() {
         const selected = new Map();
-        for (const selector of CARD_SELECTORS) {
-            for (const element of document.querySelectorAll(selector)) {
-                const ids = uniqueProductIds(element);
-                if (ids.size !== 1 || !hasFreePrice(element) || hasOwnedAction(element)) continue;
-                const link = [...element.querySelectorAll('a[href*="/packages/"]')].find(a => parseProductLink(a.getAttribute('href')));
-                if (!link) continue;
-                const product = parseProductLink(link.getAttribute('href'));
-                selected.set(product.id, { ...product, name: extractName(element, link), element });
+        const cardSelector = CARD_SELECTORS.join(',');
+        const checked = new Set();
+        for (const card of document.querySelectorAll(cardSelector)) {
+            let element = card;
+            for (let parent = card.parentElement?.closest(cardSelector); parent; parent = parent.parentElement?.closest(cardSelector)) {
+                if (uniqueProductIds(parent).size !== 1) break;
+                element = parent;
             }
+            if (checked.has(element)) continue;
+            checked.add(element);
+            const ids = uniqueProductIds(element);
+            if (ids.size !== 1 || !hasFreePrice(element) || hasOwnedAction(element)) continue;
+            const link = [...element.querySelectorAll('a[href*="/packages/"]')].find(a => parseProductLink(a.getAttribute('href')));
+            if (!link) continue;
+            const product = parseProductLink(link.getAttribute('href'));
+            selected.set(product.id, { ...product, name: extractName(element, link), element });
         }
         for (const link of document.querySelectorAll('a[href*="/packages/"]')) {
             const product = parseProductLink(link.getAttribute('href'));
             if (!product || selected.has(product.id)) continue;
-            if (link.closest(CARD_SELECTORS.join(','))) continue;
+            if (link.closest(cardSelector)) continue;
             let parent = link.parentElement;
+            let element = null;
             for (let depth = 0; parent && depth < 7; parent = parent.parentElement, depth++) {
-                if (uniqueProductIds(parent).size > 1) break;
-                if (hasFreePrice(parent)) {
-                    if (!hasOwnedAction(parent)) {
-                        selected.set(product.id, { ...product, name: extractName(parent, link), element: parent });
-                    }
-                    break;
-                }
+                if (parent === document.body || parent === document.documentElement || parent.matches('main,[role="main"]')) break;
+                if (uniqueProductIds(parent).size !== 1) break;
+                element = parent;
+            }
+            if (element && hasFreePrice(element) && !hasOwnedAction(element)) {
+                selected.set(product.id, { ...product, name: extractName(element, link), element });
             }
         }
         return [...selected.values()];
@@ -543,7 +658,11 @@
 
     function listingIdentity() {
         const productIds = new Set();
-        for (const link of document.querySelectorAll('a[href*="/packages/"]')) {
+        const cards = [...document.querySelectorAll(CARD_SELECTORS.join(','))];
+        const links = cards.length
+            ? cards.flatMap(card => [...card.querySelectorAll('a[href*="/packages/"]')])
+            : document.querySelectorAll('a[href*="/packages/"]');
+        for (const link of links) {
             const product = parseProductLink(link.getAttribute('href'));
             if (product) productIds.add(product.id);
         }
@@ -559,8 +678,11 @@
     }
 
     function listingContentKey(identity) {
-        const ids = JSON.parse(identity).ids;
-        return ids.length ? JSON.stringify(ids) : null;
+        try {
+            const ids = JSON.parse(identity)?.ids;
+            if (!Array.isArray(ids) || !ids.length || !ids.every(validProductId)) return null;
+            return JSON.stringify([...new Set(ids.map(String))].sort());
+        } catch { return null; }
     }
 
     function enabled(element) {
@@ -572,20 +694,33 @@
     }
 
     function paginationRoot(element) {
-        return element.closest('nav, [role="navigation"], [class*="pagination"], [class*="Pagination"], [data-test*="pagination"], [data-testid*="pagination"]');
+        if (element.closest('[class*="carousel" i], [class*="slider" i], [aria-roledescription="carousel" i]')) return null;
+        const explicit = element.closest('[class*="pagination" i], [data-test*="pagination" i], [data-testid*="pagination" i], [data-test="next-page"], [data-testid="next-page"]');
+        if (explicit) return explicit;
+        const nav = element.closest('nav, [role="navigation"]');
+        if (!nav) return null;
+        if (/\b(?:pagination|pages?)\b/i.test(nav.getAttribute('aria-label') || '') ||
+            nav.querySelector('[aria-current="page"], [aria-label*="page" i], [title*="page" i]')) return nav;
+        const numbered = [...nav.querySelectorAll('button, a, [role="button"]')]
+            .filter(control => /^\d{1,6}$/.test(control.textContent.trim()));
+        return numbered.length >= 2 ? nav : null;
     }
 
     function paginationPageNumber() {
+        const active = [...document.querySelectorAll('[aria-current="page"]')].find(paginationRoot);
+        if (active && /^\d{1,6}$/.test(active.textContent.trim())) return Number(active.textContent.trim());
         const params = new URL(location.href).searchParams;
-        for (const key of ['page', 'pageNumber', 'pageIndex', 'p']) {
+        for (const key of ['page', 'pageNumber', 'p']) {
             const value = Number(params.get(key));
             if (Number.isInteger(value) && value > 0) return value;
         }
-        const active = document.querySelector('[aria-current="page"]');
-        if (active && /^\d{1,6}$/.test(active.textContent.trim())) return Number(active.textContent.trim());
+        if (params.has('pageIndex')) {
+            const index = Number(params.get('pageIndex'));
+            if (Number.isInteger(index) && index >= 0) return index + 1;
+        }
         const range = resultsRange();
         if (range?.start === 1) return 1;
-        if (range && range.end > range.start) {
+        if (range && range.end > range.start && range.end < range.total) {
             const rows = range.end - range.start + 1;
             const computed = Math.floor((range.start - 1) / rows) + 1;
             if (computed >= 1) return computed;
@@ -602,11 +737,11 @@
             'button[data-test="next-page"]', 'button[data-testid="next-page"]'
         ];
         for (const selector of explicitSelectors) {
-            const control = [...document.querySelectorAll(selector)].find(enabled);
+            const control = [...document.querySelectorAll(selector)].find(element => paginationRoot(element) && enabled(element));
             if (control) return control;
         }
 
-        const allControls = [...document.querySelectorAll('button, a, [role="button"]')].filter(enabled);
+        const allControls = [...document.querySelectorAll('button, a, [role="button"], [aria-current="page"]')];
         const paginationControls = allControls.filter(paginationRoot);
         const nextPattern = /^(?:next(?:\s+page)?|›|»|→|➡|⟩)$/i;
         const labelOf = control => [
@@ -615,6 +750,7 @@
             control.getAttribute('data-testid'), control.textContent
         ].filter(Boolean).map(s => s.trim());
         for (const control of paginationControls) {
+            if (!enabled(control)) continue;
             const labels = labelOf(control);
             if (labels.some(label => nextPattern.test(label) || /(?:^|[-_])(?:pagination[-_])?next(?:[-_](?:page|button))?(?:$|[-_])/i.test(label))) return control;
             const icon = control.querySelector('svg, [class*="icon"], [class*="Icon"]');
@@ -631,7 +767,6 @@
             byRoot.get(item.root).push(item);
         }
         for (const items of byRoot.values()) {
-            if (items.length < 2) continue;
             const active = items.find(({ el }) => {
                 const cls = typeof el.className === 'string' ? el.className : '';
                 const parentClass = typeof el.parentElement?.className === 'string' ? el.parentElement.className : '';
@@ -641,7 +776,7 @@
                     /(^|[\s_-])(active|selected|current)([\s_-]|$)/i.test(cls + ' ' + parentClass);
             });
             const current = active?.n || paginationPageNumber();
-            const target = items.find(item => item.n === current + 1);
+            const target = items.find(item => item.n === current + 1 && enabled(item.el));
             if (target) return target.el;
         }
         return null;
@@ -656,45 +791,79 @@
 
     function errorFromResponse(data) {
         if (!data || typeof data !== 'object') return 'Unexpected server response';
-        return Array.isArray(data.errors) && data.errors.length ? data.errors.map(x => x?.message || 'GraphQL error').join('; ').slice(0, 300) : 'No entitlement returned';
+        return Array.isArray(data.errors) && data.errors.length ? data.errors.map(x => typeof x?.message === 'string' && x.message.trim() ? x.message : 'GraphQL error').join('; ').slice(0, 300) : 'No entitlement returned';
     }
 
     async function redeemOne(asset, signal) {
         if (!validProductId(asset?.id)) throw new Error('Invalid Unity product ID');
+        if (signal?.aborted) throw new DOMException('The request was aborted.', 'AbortError');
         const csrf = getCSRF();
         if (!csrf) throw Object.assign(new Error('No CSRF cookie. Sign in to Unity and refresh.'), { fatal: true });
-        let response;
+        const controller = new AbortController();
+        let rejectInterrupted;
+        const interrupted = new Promise((resolve, reject) => { rejectInterrupted = reject; });
+        const cancel = () => {
+            controller.abort();
+            rejectInterrupted(new DOMException('The request was aborted.', 'AbortError'));
+        };
+        signal?.addEventListener('abort', cancel, { once: true });
+        const deadline = setTimeout(() => {
+            controller.abort();
+            rejectInterrupted(Object.assign(new Error('Unity request timed out after 30 seconds. Its outcome is unknown; check My Assets before trying again.'), { fatal: true, timeout: true }));
+        }, 30000);
         try {
-            response = await fetch(GRAPHQL_URL, {
-                method: 'POST', credentials: 'same-origin', cache: 'no-store', signal,
-                headers: {
-                    'Content-Type': 'application/json', 'Accept': 'application/json',
-                    'operations': 'AddToDownload', 'x-csrf-token': csrf,
-                    'x-requested-with': 'XMLHttpRequest', 'x-source': 'storefront, storefront'
-                },
-                body: JSON.stringify({ query: MUTATION, operationName: 'AddToDownload', variables: { id: asset.id } })
-            });
-        } catch (error) {
-            if (error.name === 'AbortError') throw error;
-            throw Object.assign(new Error(`Network request failed: ${error.message}`), { retryable: true });
+            const request = (async () => {
+                let response;
+                try {
+                    response = await fetch(GRAPHQL_URL, {
+                        method: 'POST', credentials: 'same-origin', cache: 'no-store', signal: controller.signal,
+                        headers: {
+                            'Content-Type': 'application/json', 'Accept': 'application/json',
+                            'operations': 'AddToDownload', 'x-csrf-token': csrf,
+                            'x-requested-with': 'XMLHttpRequest', 'x-source': 'storefront, storefront'
+                        },
+                        body: JSON.stringify({ query: MUTATION, operationName: 'AddToDownload', variables: { id: asset.id } })
+                    });
+                } catch (error) {
+                    if (error.name === 'AbortError') throw error;
+                    throw Object.assign(new Error(`Network request failed: ${error.message}`), { retryable: true });
+                }
+                if (response.status === 401 || response.status === 403 || response.status === 419) {
+                    throw Object.assign(new Error(`Unity rejected authentication (${response.status}). Sign in again or accept Unity's terms.`), { fatal: true });
+                }
+                if (response.status === 429 || response.status >= 500) {
+                    throw Object.assign(new Error(`Unity temporarily unavailable (HTTP ${response.status})`), {
+                        retryable: true, retryAfter: parseRetryAfter(response.headers.get('Retry-After'))
+                    });
+                }
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                let data;
+                try { data = await response.json(); }
+                catch (error) {
+                    if (error.name === 'AbortError') throw error;
+                    throw new Error('Unity returned non-JSON response');
+                }
+                if (data?.errors !== undefined && !Array.isArray(data.errors)) throw new Error('Unity returned invalid GraphQL errors');
+                const errors = Array.isArray(data?.errors) ? data.errors : [];
+                if (!errors.length && String(data?.data?.addToDownload?.id || '') === String(asset.id)) return;
+                const reason = errorFromResponse(data);
+                const messages = errors.map(error => typeof error?.message === 'string' ? error.message.trim() : '');
+                const authError = /\b(?:unauthenticated|not authenticated|authentication (?:is )?required|(?:sign|log)[ -]?in (?:is )?required|(?:invalid|expired|missing)\s+(?:csrf|xsrf|authentication|session|access)\s+token|(?:csrf|xsrf)(?:\s+token)?(?:\s+(?:is|has))?\s+(?:invalid|expired|missing|failed|mismatch)|(?:invalid|expired|missing)\s+(?:authentication|session))\b/i;
+                if (messages.some(message => authError.test(message))) {
+                    throw Object.assign(new Error(`Unity rejected authentication: ${reason}. Sign in and refresh before continuing.`), { fatal: true });
+                }
+                const ownedMessage = /^(?:(?:this|the)\s+)?(?:(?:asset|product|package|item)\s+(?:is\s+)?)?(?:already (?:owned|purchased)(?: by (?:you|this account|the current user))?|already (?:in|added to) (?:your|the) (?:assets|library))[.!]?$/i;
+                const youOwnMessage = /^you already (?:own|have|purchased) (?:this|the) (?:asset|product|package|item)[.!]?$/i;
+                if (messages.length && messages.every(message => ownedMessage.test(message) || youOwnMessage.test(message))) {
+                    throw Object.assign(new Error(reason), { alreadyOwned: true });
+                }
+                throw new Error(reason);
+            })();
+            await Promise.race([request, interrupted]);
+        } finally {
+            clearTimeout(deadline);
+            signal?.removeEventListener('abort', cancel);
         }
-        if (response.status === 401 || response.status === 403 || response.status === 419) {
-            throw Object.assign(new Error(`Unity rejected authentication (${response.status}). Sign in again or accept Unity's terms.`), { fatal: true });
-        }
-        if (response.status === 429 || response.status >= 500) {
-            throw Object.assign(new Error(`Unity temporarily unavailable (HTTP ${response.status})`), {
-                retryable: true, retryAfter: parseRetryAfter(response.headers.get('Retry-After'))
-            });
-        }
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        let data;
-        try { data = await response.json(); } catch { throw new Error('Unity returned non-JSON response'); }
-        if (!(Array.isArray(data?.errors) && data.errors.length) && String(data?.data?.addToDownload?.id || '') === String(asset.id)) return;
-        const reason = errorFromResponse(data);
-        if (/already (owned|purchased|added)|already in (?:your |the )?(?:assets|library)|already (?:owned|purchased) by/i.test(reason)) {
-            throw Object.assign(new Error(reason), { alreadyOwned: true });
-        }
-        throw new Error(reason);
     }
 
     const active = token => state.running && token === state.token;
@@ -715,8 +884,8 @@
                 if (!active(token) || error.name === 'AbortError') return 'stopped';
                 if (error.alreadyOwned) return 'owned';
                 if (error.fatal) throw error;
+                if (error.retryable && error.retryAfter > 60000) throw new Error(`Unity requested a retry after ${Math.ceil(error.retryAfter / 1000)} seconds. Wait before starting again.`);
                 if (error.retryable && attempt < 2) {
-                    if (error.retryAfter > 60000) throw new Error(`Unity requested a retry after ${Math.ceil(error.retryAfter / 1000)} seconds. Wait before starting again.`);
                     const waitMs = error.retryAfter || (2000 * 2 ** attempt + Math.floor(Math.random() * 600));
                     addEvent('skip', `Retrying ${asset.name} after ${Math.ceil(waitMs / 1000)}s (${error.message})`);
                     if (!(await pause(waitMs, token))) return 'stopped';
@@ -731,56 +900,166 @@
         return { failure: 'Retries exhausted' };
     }
 
+    function listingIsReady(identity) {
+        const data = JSON.parse(identity);
+        if (!data.ids.length) return false;
+        const range = data.range.match(/^(\d+)-(\d+)-(\d+)$/);
+        const expectedCount = range ? Number(range[2]) - Number(range[1]) + 1 : 0;
+        if (expectedCount > 0 && expectedCount <= 96 && data.ids.length < expectedCount) return false;
+        return ![...document.querySelectorAll(CARD_SELECTORS.join(','))]
+            .some(card => card.closest('[aria-busy="true"]'));
+    }
+
     async function waitForPageChange(before, token, timeoutMs = 30000) {
+        const beforeContent = listingContentKey(before);
+        const deadline = Date.now() + timeoutMs;
         let stableIdentity = null;
-        let stableSamples = 0;
-        for (let waited = 0; waited < timeoutMs && active(token); waited += 400) {
-            await sleep(400);
+        let stableSince = 0;
+        while (Date.now() < deadline && active(token)) {
+            await sleep(Math.min(400, deadline - Date.now()));
+            if (!active(token)) return false;
             const after = listingIdentity();
-            const beforeData = JSON.parse(before);
-            const afterData = JSON.parse(after);
-            const resultsChanged = afterData.ids.join(',') !== beforeData.ids.join(',') ||
-                afterData.range !== beforeData.range || afterData.active !== beforeData.active;
-            const beforeHasProducts = beforeData.ids.length > 0;
-            if (after !== before && (resultsChanged || !beforeHasProducts) && afterData.ids.length > 0) {
-                if (after === stableIdentity) stableSamples++;
-                else { stableIdentity = after; stableSamples = 1; }
-                if (stableSamples >= 3) {
-                    await pause(1000, token);
-                    return active(token) && listingIdentity() === after;
+            const content = listingContentKey(after);
+            if (content && content !== beforeContent && listingIsReady(after)) {
+                if (after !== stableIdentity) {
+                    stableIdentity = after;
+                    stableSince = Date.now();
                 }
+                if (Date.now() - stableSince >= 2000) return true;
             } else {
                 stableIdentity = null;
-                stableSamples = 0;
+                stableSince = 0;
             }
         }
         return false;
     }
 
     function clearResume() {
-        try { sessionStorage.removeItem(RESUME_KEY); } catch {}
+        return writeStored('sessionStorage', RESUME_KEY, null, true);
+    }
+
+    function normalizeResume(raw) {
+        if (!raw || typeof raw !== 'object' || !Number.isFinite(raw.time) ||
+            Date.now() - raw.time < 0 || Date.now() - raw.time >= 60000 ||
+            raw.allPages !== true || typeof raw.preview !== 'boolean') return null;
+        try {
+            const url = new URL(raw.url);
+            if (url.origin !== location.origin) return null;
+            for (const key of ['page', 'nextPaginationPage', 'claimed', 'failed', 'skipped']) {
+                if (!Number.isSafeInteger(raw[key]) || raw[key] < 0) return null;
+            }
+            if (raw.page < 1 || raw.page > 300 || raw.nextPaginationPage < 1) return null;
+            if (!Array.isArray(raw.processed) || raw.processed.length > 50000 ||
+                !raw.processed.every(id => typeof id === 'string' && validProductId(id)) ||
+                !Array.isArray(raw.seenPages) || raw.seenPages.length > 300) return null;
+            for (const signature of raw.seenPages) {
+                if (typeof signature !== 'string' || signature.length > 100000) return null;
+                const parsed = JSON.parse(signature);
+                if (!parsed || typeof parsed.url !== 'string' || typeof parsed.range !== 'string' ||
+                    typeof parsed.active !== 'string' || !Array.isArray(parsed.ids) || parsed.ids.length > 2000 ||
+                    !parsed.ids.every(id => typeof id === 'string' && validProductId(id))) return null;
+            }
+            return {
+                time: raw.time, url: url.href, allPages: true, preview: raw.preview,
+                page: raw.page, nextPaginationPage: raw.nextPaginationPage,
+                claimed: raw.claimed, failed: raw.failed, skipped: raw.skipped,
+                processed: [...new Set(raw.processed)], seenPages: [...new Set(raw.seenPages)]
+            };
+        } catch { return null; }
+    }
+
+    function resumeMatchesListing(resume) {
+        const before = new URL(resume.url);
+        const after = new URL(location.href);
+        if (before.pathname !== after.pathname || before.search === after.search) return false;
+        const pageKeys = ['page', 'pageNumber', 'pageIndex', 'p'];
+        const pageKey = pageKeys.find(key => after.searchParams.has(key));
+        if (pageKey) {
+            const page = Number(after.searchParams.get(pageKey)) + (pageKey === 'pageIndex' ? 1 : 0);
+            if (!Number.isSafeInteger(page) || page !== resume.nextPaginationPage) return false;
+        }
+        for (const key of pageKeys) {
+            before.searchParams.delete(key);
+            after.searchParams.delete(key);
+        }
+        before.searchParams.sort();
+        after.searchParams.sort();
+        return before.searchParams.toString() === after.searchParams.toString();
+    }
+
+    function cancelPendingResume() {
+        const pending = state.pendingResume;
+        ++state.resumeGeneration;
+        if (state.resumeTimer !== null) clearTimeout(state.resumeTimer);
+        state.resumeTimer = null;
+        state.pendingResume = false;
+        return pending;
+    }
+
+    function scheduleResume(resume) {
+        cancelPendingResume();
+        const generation = state.resumeGeneration;
+        state.pendingResume = true;
+        let attempts = 0;
+        let lastIdentity = '';
+        let stableSince = Date.now();
+        const expectedUrl = location.href;
+        const previousContents = new Set(resume.seenPages.map(listingContentKey));
+        setStatus('Waiting for listings before resuming. Press Stop to cancel.');
+        const check = () => {
+            if (!state.pendingResume || state.resumeGeneration !== generation || state.running) return;
+            if (location.href !== expectedUrl) {
+                cancelPendingResume();
+                setStatus('Automatic resume cancelled because the listing URL changed.');
+                return;
+            }
+            const identity = listingIdentity();
+            if (identity !== lastIdentity) {
+                lastIdentity = identity;
+                stableSince = Date.now();
+            }
+            if (listingIsReady(identity) && !previousContents.has(listingContentKey(identity)) && Date.now() - stableSince >= 2000) {
+                state.resumeTimer = null;
+                state.pendingResume = false;
+                run(resume);
+            } else if (++attempts >= 30) {
+                cancelPendingResume();
+                setStatus('Stopped: listings did not become ready for automatic resume. Scan the page before starting again.', 'error');
+            } else {
+                state.resumeTimer = setTimeout(check, 500);
+            }
+        };
+        state.resumeTimer = setTimeout(check, 1400);
     }
 
     async function run(resumeData = null) {
         if (state.running) return;
+        cancelPendingResume();
+        const restored = resumeData === null ? null : normalizeResume(resumeData);
+        if (resumeData !== null && !restored) {
+            clearResume();
+            setStatus('Stopped: saved page progress is invalid or expired. Start a new run.', 'error');
+            return;
+        }
+        resumeData = restored;
         clearResume();
         saveSettings();
         const token = ++state.token;
         state.running = true;
-        state.aborter = null;
-        state.page = Number(resumeData?.page) || 0;
-        state.currentPaginationPage = Number(resumeData?.nextPaginationPage) || paginationPageNumber();
-        state.current = 0;
-        state.total = 0;
-        state.successes = Number(resumeData?.claimed) || 0;
-        state.failures = Number(resumeData?.failed) || 0;
-        state.skipped = Number(resumeData?.skipped) || 0;
-        state.currentName = '';
-        const processed = new Set([...knownIds, ...(Array.isArray(resumeData?.processed) ? resumeData.processed : [])]);
-        const seenPages = new Set(Array.isArray(resumeData?.seenPages) ? resumeData.seenPages : []);
-        const seenContent = new Set([...seenPages].map(listingContentKey).filter(Boolean));
-        setStatus('Scanning the current page...', 'running');
         try {
+            state.aborter = null;
+            state.page = resumeData?.page || 0;
+            state.currentPaginationPage = resumeData?.nextPaginationPage || paginationPageNumber();
+            state.current = 0;
+            state.total = 0;
+            state.successes = resumeData?.claimed || 0;
+            state.failures = resumeData?.failed || 0;
+            state.skipped = resumeData?.skipped || 0;
+            state.currentName = '';
+            const processed = new Set([...knownIds, ...(resumeData?.processed || [])]);
+            const seenPages = new Set(resumeData?.seenPages || []);
+            const seenContent = new Set([...seenPages].map(listingContentKey).filter(Boolean));
+            setStatus('Scanning the current page...', 'running');
             while (active(token)) {
                 const signature = listingIdentity();
                 const contentKey = listingContentKey(signature);
@@ -790,11 +1069,11 @@
                 }
                 seenPages.add(signature);
                 if (contentKey) seenContent.add(contentKey);
-                state.page++;
-                if (state.page > Math.max(1, Math.min(300, Number(settings.maxPages) || 100))) {
+                if (state.page >= settings.maxPages) {
                     setStatus('Stopped at the maximum page safety limit.', 'error');
                     break;
                 }
+                state.page++;
                 const items = getCandidates();
                 state.lastScan = items;
                 state.total = items.length;
@@ -815,7 +1094,17 @@
                         addEvent('info', `Preview: ${asset.name} (${asset.id})`);
                     } else {
                         processed.add(asset.id);
-                        const result = await redeemWithRetry(asset, token);
+                        let result;
+                        try {
+                            result = await redeemWithRetry(asset, token);
+                        } catch (error) {
+                            if (!active(token)) break;
+                            state.failures++;
+                            state.current++;
+                            addHistory(asset, 'failed', error.message);
+                            throw error;
+                        }
+                        if (!active(token)) break;
                         if (result === 'stopped') break;
                         if (result === 'claimed') {
                             state.successes++;
@@ -834,7 +1123,7 @@
                     state.current++;
                     state.currentName = '';
                     render();
-                    if (state.current < state.total && !(await pause(Math.max(500, settings.delay || 1500), token))) break;
+                    if (state.current < state.total && !(await pause(settings.delay, token))) break;
                 }
                 if (!active(token)) break;
                 if (!settings.allPages) {
@@ -856,17 +1145,21 @@
                 const intendedPage = paginationPageNumber() + 1;
                 setStatus(`Page ${state.page} finished. Moving to next page...`, 'running');
                 if (!(await pause(1200, token))) break;
-                try {
-                    sessionStorage.setItem(RESUME_KEY, JSON.stringify({
-                        time: Date.now(), url: location.href, signature, allPages: settings.allPages,
-                        preview: settings.preview, claimed: state.successes, skipped: state.skipped,
-                        failed: state.failures, page: state.page,
-                        nextPaginationPage: intendedPage,
-                        processed: [...processed], seenPages: [...seenPages]
-                    }));
-                } catch {}
+                const saved = writeStored('sessionStorage', RESUME_KEY, {
+                    time: Date.now(), url: location.href, allPages: settings.allPages,
+                    preview: settings.preview, claimed: state.successes, skipped: state.skipped,
+                    failed: state.failures, page: state.page,
+                    nextPaginationPage: intendedPage,
+                    processed: [...processed], seenPages: [...seenPages]
+                });
+                if (!saved) {
+                    setStatus('Stopped: page progress could not be saved. Resolve the storage warning before continuing.', 'error');
+                    break;
+                }
                 next.click();
-                if (!(await waitForPageChange(beforePage, token))) {
+                const changed = await waitForPageChange(beforePage, token);
+                if (!active(token)) break;
+                if (!changed) {
                     clearResume();
                     setStatus('Stopped: next page did not load or contained the same results.', 'error');
                     break;
@@ -878,8 +1171,8 @@
             if (active(token)) {
                 setStatus(`Stopped: ${error.message}`, 'error');
                 addEvent('fail', error.message);
+                clearResume();
             }
-            clearResume();
         } finally {
             if (token === state.token) {
                 state.running = false;
@@ -892,7 +1185,8 @@
     }
 
     function stop() {
-        if (!state.running) return;
+        const pending = cancelPendingResume();
+        if (!state.running && !pending) return;
         ++state.token;
         state.running = false;
         state.aborter?.abort();
@@ -935,26 +1229,32 @@
             parseProductLink,
             parseRetryAfter,
             redeemOne,
-            validProductId
+            validProductId,
+            waitForPageChange,
+            paginationPageNumber,
+            normalizeSettings,
+            normalizeResume,
+            run,
+            stop,
+            state
         });
     }
 
-    const resume = readJSON(sessionStorage, RESUME_KEY, null);
-    const resumeSameListing = resume && (() => {
-        try { return new URL(resume.url).pathname === location.pathname; } catch { return false; }
-    })();
-    if (resume && Date.now() - resume.time < 60000 && location.href !== resume.url && resumeSameListing) {
+    const savedResume = readJSON('sessionStorage', RESUME_KEY, null);
+    const resume = normalizeResume(savedResume);
+    if (resume && resumeMatchesListing(resume)) {
         settings.allPages = resume.allPages;
         settings.preview = resume.preview;
         $('pages').checked = settings.allPages;
         $('preview').checked = settings.preview;
+        if (clearResume()) {
+            addEvent('info', 'Preparing to resume after page navigation.');
+            scheduleResume(resume);
+        } else {
+            setStatus('Automatic resume cancelled: saved page progress could not be cleared.', 'error');
+        }
+    } else if (savedResume) {
         clearResume();
-        addEvent('info', 'Resuming after page navigation.');
-        setTimeout(async () => {
-            for (let n = 0; n < 30 && getCandidates().length === 0; n++) await sleep(500);
-            run(resume);
-        }, 1400);
-    } else if (resume) {
-        clearResume();
+        setStatus('Saved page progress is invalid, expired or belongs to a different listing. Start a new run.');
     }
 })();

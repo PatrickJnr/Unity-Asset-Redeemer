@@ -19,7 +19,8 @@ function load(html = '') {
 
 test('metadata has one block and matching release version', () => {
     assert.equal((source.match(/\/\/ ==UserScript==/g) || []).length, 1);
-    assert.match(source, /^\/\/ @version\s+2\.3\.1$/m);
+    const version = source.match(/^\/\/ @version\s+(\d+\.\d+\.\d+)$/m)?.[1];
+    assert.equal(version, require('../package.json').version);
 });
 
 test('validates numeric Unity product IDs', () => {
